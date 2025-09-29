@@ -9,10 +9,11 @@ try {
     const { amount, phone } = req.body;
     if (!amount) return res.status(400).json({ error: "Amount is required" });
 
+    // Find user from token
     const user = await JboosterUser.findById(req.user._id);
     if (!user) return res.status(404).json({ error: "User not found" });
 
-    // Create pending payment entry
+    // Create payment entry WITHOUT transactionId yet
     const payment = await Payment.create({
       user: user._id,
       amount,
@@ -21,7 +22,7 @@ try {
       description: "Wallet Top-up",
     });
 
-    // Payload for provider
+    // Prepare provider payload
     const payload = {
       businessId: process.env.BUSINESS_ID,
       amount,
@@ -37,7 +38,7 @@ try {
       },
     };
 
-    // Call provider API
+    // Call payment provider API to generate virtual account
     const response = await axios.post(
       `${process.env.PAYMENT_BASE_URL}/bank-transfer/api/v1/bankTransfer/virtualAccount`,
       payload,
@@ -49,17 +50,20 @@ try {
       }
     );
 
-    const respData = response.data?.data;
-    if (!respData) {
-      return res.status(500).json({ error: "No data returned from payment provider" });
+    const data = response.data.data;
+
+    if (!data || !data.transactionId) {
+      return res.status(500).json({ error: "Failed to create top-up" });
     }
 
-    // Update payment with provider details
-    payment.transactionId = respData.transactionId;
-    payment.virtualAccountNumber = respData.virtualBankAccountNumber;
-    payment.virtualBankCode = respData.virtualBankCode || "Wema Bank";
+    // Update payment with transactionId, virtual account number, bank code & bank name
+    payment.transactionId = data.transactionId;
+    payment.virtualAccountNumber = data.virtualBankAccountNumber;
+    payment.virtualBankCode = data.virtualBankCode;
+    payment.virtualBankName = data.virtualBankName || "Wema Bank";
     await payment.save();
 
+    // Return fully detailed payment info
     res.json({
       success: true,
       payment: {
@@ -71,12 +75,13 @@ try {
         status: payment.status,
         virtualAccountNumber: payment.virtualAccountNumber,
         virtualBankCode: payment.virtualBankCode,
+        virtualBankName: payment.virtualBankName,
         description: payment.description,
         createdAt: payment.createdAt,
       },
     });
   } catch (error) {
-    console.error("Failed to create top-up full error:", error.response?.data || error.message);
+    console.error("Failed to create top-up full error:", error.response?.data || error.message || error);
     res.status(500).json({ error: "Failed to create top-up" });
   }
 };
