@@ -7,6 +7,7 @@ import dotenv from "dotenv";
 import serviceRoutes from "./routes/serviceRoutes.js";
 import orderRoutes from "./routes/orderRoutes.js";
 import authRoutes from "./routes/authRoutes.js"
+import paymentRoutes from "./routes/paymentRoutes.js"
 
 dotenv.config();
 const app = express();
@@ -19,6 +20,7 @@ app.use(express.json());
 app.use("/api/services", serviceRoutes);
 app.use("/api/orders", orderRoutes);
 app.use("/api/auth", authRoutes);
+app.use("/api/wallet", paymentRoutes);
 
 // Connect to MongoDB and then start server
 const PORT = process.env.PORT || 5009;
