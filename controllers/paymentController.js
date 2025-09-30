@@ -1,11 +1,10 @@
 import axios from "axios";
-import Transaction from "../models/Transaction.js";
+import Payment from "../models/Payment.js";   // <-- use this instead of Transaction
 import JboosterUser from "../models/User.js";
-import Payment from "../models/Payment.js";
 
 // Create Top-Up
 export const createTopup = async (req, res) => {
-try {
+  try {
     const { amount, phone } = req.body;
     if (!amount) return res.status(400).json({ error: "Amount is required" });
 
@@ -13,7 +12,7 @@ try {
     const user = await JboosterUser.findById(req.user._id);
     if (!user) return res.status(404).json({ error: "User not found" });
 
-    // Create payment entry WITHOUT transactionId yet
+    // Create payment entry (pending, no transactionId yet)
     const payment = await Payment.create({
       user: user._id,
       amount,
@@ -27,7 +26,7 @@ try {
       businessId: process.env.BUSINESS_ID,
       amount,
       currency: "NGN",
-      orderId: payment._id.toString(),
+      orderId: payment._id.toString(), // tie back to our DB entry
       description: "Wallet Top-up",
       customer: {
         email: user.email,
@@ -38,7 +37,7 @@ try {
       },
     };
 
-    // Call payment provider API to generate virtual account
+    // Call provider to generate virtual account
     const response = await axios.post(
       `${process.env.PAYMENT_BASE_URL}/bank-transfer/api/v1/bankTransfer/virtualAccount`,
       payload,
@@ -56,14 +55,13 @@ try {
       return res.status(500).json({ error: "Failed to create top-up" });
     }
 
-    // Update payment with transactionId, virtual account number, bank code & bank name
+    // Update payment with provider details
     payment.transactionId = data.transactionId;
     payment.virtualAccountNumber = data.virtualBankAccountNumber;
     payment.virtualBankCode = data.virtualBankCode;
     payment.virtualBankName = data.virtualBankName || "Wema Bank";
     await payment.save();
 
-    // Return fully detailed payment info
     res.json({
       success: true,
       payment: {
@@ -81,7 +79,10 @@ try {
       },
     });
   } catch (error) {
-    console.error("Failed to create top-up full error:", error.response?.data || error.message || error);
+    console.error(
+      "Failed to create top-up full error:",
+      error.response?.data || error.message || error
+    );
     res.status(500).json({ error: "Failed to create top-up" });
   }
 };
@@ -91,10 +92,11 @@ export const checkTopupStatus = async (req, res) => {
   try {
     const { transactionId } = req.params;
 
-    const transaction = await Transaction.findOne({ reference: transactionId }).populate("user");
-    if (!transaction) return res.status(404).json({ error: "Transaction not found" });
+    // 🔑 Look up from Payment model instead of Transaction
+    const payment = await Payment.findOne({ transactionId }).populate("user");
+    if (!payment) return res.status(404).json({ error: "Transaction not found" });
 
-    // Call payment provider to check status
+    // Call provider to check status
     const response = await axios.get(
       `${process.env.PAYMENT_BASE_URL}/bank-transfer/api/v1/bankTransfer/transactions/${transactionId}`,
       {
@@ -107,26 +109,29 @@ export const checkTopupStatus = async (req, res) => {
 
     const data = response.data.data;
 
-    // Only credit wallet if successful and not already credited
-    if (data.status === "success" && transaction.status !== "success") {
-      transaction.user.balance += transaction.amount;
-      await transaction.user.save();
+    // Update status + wallet balance
+    if (data.status === "success" && payment.status !== "success") {
+      payment.user.balance += payment.amount;
+      await payment.user.save();
 
-      transaction.status = "success";
-      await transaction.save();
+      payment.status = "success";
+      await payment.save();
     } else if (data.status === "failed") {
-      transaction.status = "failed";
-      await transaction.save();
+      payment.status = "failed";
+      await payment.save();
     }
 
     res.json({
       success: true,
-      status: transaction.status,
-      amount: transaction.amount,
-      balance: transaction.user.balance,
+      status: payment.status,
+      amount: payment.amount,
+      balance: payment.user.balance,
     });
   } catch (error) {
-    console.error("Check top-up status error:", error.response?.data || error.message);
+    console.error(
+      "Check top-up status error:",
+      error.response?.data || error.message
+    );
     res.status(500).json({ error: "Failed to check top-up status" });
   }
 };
