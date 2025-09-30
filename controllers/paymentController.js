@@ -92,11 +92,11 @@ export const checkTopupStatus = async (req, res) => {
   try {
     const { transactionId } = req.params;
 
-    // 🔑 Look up from Payment model instead of Transaction
+    // Find payment by transactionId
     const payment = await Payment.findOne({ transactionId }).populate("user");
-    if (!payment) return res.status(404).json({ error: "Transaction not found" });
+    if (!payment) return res.status(404).json({ error: "Payment not found" });
 
-    // Call provider to check status
+    // Call provider
     const response = await axios.get(
       `${process.env.PAYMENT_BASE_URL}/bank-transfer/api/v1/bankTransfer/transactions/${transactionId}`,
       {
@@ -109,7 +109,7 @@ export const checkTopupStatus = async (req, res) => {
 
     const data = response.data.data;
 
-    // Update status + wallet balance
+    // Update payment + user wallet
     if (data.status === "success" && payment.status !== "success") {
       payment.user.balance += payment.amount;
       await payment.user.save();
@@ -128,10 +128,7 @@ export const checkTopupStatus = async (req, res) => {
       balance: payment.user.balance,
     });
   } catch (error) {
-    console.error(
-      "Check top-up status error:",
-      error.response?.data || error.message
-    );
+    console.error("Check top-up status error:", error.response?.data || error.message);
     res.status(500).json({ error: "Failed to check top-up status" });
   }
 };
