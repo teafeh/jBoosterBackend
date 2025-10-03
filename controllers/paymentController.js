@@ -2,8 +2,6 @@ import axios from "axios";
 import Payment from "../models/Payment.js";
 import JboosterUser from "../models/User.js";
 
-// const PAYSTACK_KEY = process.env.PAYSTACK_SECRET_KEY;
-
 /**
  * Create Top-up
  */
@@ -14,7 +12,6 @@ export const createTopup = async (req, res) => {
 
     const user = await JboosterUser.findById(req.user._id);
     if (!user) return res.status(404).json({ error: "User not found" });
-    
 
     // Create pending payment record
     const payment = await Payment.create({
@@ -35,8 +32,6 @@ export const createTopup = async (req, res) => {
       currency: "NGN",
     };
 
-
-
     const response = await axios.post(
       "https://api.paystack.co/transaction/initialize",
       payload,
@@ -47,9 +42,6 @@ export const createTopup = async (req, res) => {
         },
       }
     );
-console.log(response);
-  
-
 
     const data = response.data;
 
@@ -143,7 +135,6 @@ export const checkTopupStatus = async (req, res) => {
  */
 export const paystackWebhook = async (req, res) => {
   try {
-    const secret = process.env.PAYSTACK_SECRET_KEY;
     const event = req.body;
 
     if (event.event === "charge.success") {
@@ -167,5 +158,24 @@ export const paystackWebhook = async (req, res) => {
   } catch (error) {
     console.error("Webhook error:", error.message);
     res.sendStatus(500);
+  }
+};
+
+/**
+ * ✅ Get all user orders/payments
+ */
+export const getUserOrders = async (req, res) => {
+  try {
+    const payments = await Payment.find({ user: req.user._id })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    res.json({
+      success: true,
+      orders: payments,
+    });
+  } catch (error) {
+    console.error("Get orders error:", error.message);
+    res.status(500).json({ error: "Failed to fetch orders" });
   }
 };
