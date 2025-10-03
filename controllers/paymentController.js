@@ -31,7 +31,7 @@ export const createTopup = async (req, res) => {
       email: email || user.email,
       amount: amount * 100, // Paystack accepts amount in kobo
       reference: tx_ref,
-      callback_url: "https://yourdomain.com/payment-callback",
+      callback_url: "http://localhost:5173/dashboard",
       currency: "NGN",
     };
 
