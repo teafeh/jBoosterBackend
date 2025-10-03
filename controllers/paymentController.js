@@ -105,6 +105,10 @@ export const checkTopupStatus = async (req, res) => {
 
     if (data.status === "success" && payment.status !== "success") {
       payment.user.balance += payment.amount; // add wallet balance
+
+      // ✅ Increment totalOrders
+      payment.user.totalOrders = (payment.user.totalOrders || 0) + 1;
+
       await payment.user.save();
 
       payment.status = "success";
@@ -120,6 +124,7 @@ export const checkTopupStatus = async (req, res) => {
       status: payment.status,
       amount: payment.amount,
       balance: payment.user.balance,
+      totalOrders: payment.user.totalOrders,
     });
   } catch (error) {
     console.error(
@@ -146,6 +151,10 @@ export const paystackWebhook = async (req, res) => {
 
       if (payment && data.status === "success" && payment.status !== "success") {
         payment.user.balance += payment.amount / 100; // convert back from kobo
+
+        // ✅ Increment totalOrders
+        payment.user.totalOrders = (payment.user.totalOrders || 0) + 1;
+
         await payment.user.save();
 
         payment.status = "success";
