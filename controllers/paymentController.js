@@ -1,18 +1,22 @@
 import axios from "axios";
-import Payment from "../models/Payment.js";   // <-- use this instead of Transaction
+import Payment from "../models/Payment.js";
 import JboosterUser from "../models/User.js";
 
-// Create Top-Up
+// const PAYSTACK_KEY = process.env.PAYSTACK_SECRET_KEY;
+
+/**
+ * Create Top-up
+ */
 export const createTopup = async (req, res) => {
   try {
-    const { amount, phone } = req.body;
+    const { amount, email } = req.body;
     if (!amount) return res.status(400).json({ error: "Amount is required" });
 
-    // Find user from token
     const user = await JboosterUser.findById(req.user._id);
     if (!user) return res.status(404).json({ error: "User not found" });
+    
 
-    // Create payment entry (pending, no transactionId yet)
+    // Create pending payment record
     const payment = await Payment.create({
       user: user._id,
       amount,
@@ -21,100 +25,98 @@ export const createTopup = async (req, res) => {
       description: "Wallet Top-up",
     });
 
-    // Prepare provider payload
+    const tx_ref = `tx-${payment._id}-${Date.now()}`;
+
     const payload = {
-      businessId: process.env.BUSINESS_ID,
-      amount,
+      email: email || user.email,
+      amount: amount * 100, // Paystack accepts amount in kobo
+      reference: tx_ref,
+      callback_url: "https://yourdomain.com/payment-callback",
       currency: "NGN",
-      orderId: payment._id.toString(), // tie back to our DB entry
-      description: "Wallet Top-up",
-      customer: {
-        email: user.email,
-        phone: phone || "08000000000",
-        firstName: user.name || "User",
-        lastName: "",
-        metadata: "Wallet Top-up",
-      },
     };
 
-    // Call provider to generate virtual account
+
+
     const response = await axios.post(
-      `${process.env.PAYMENT_BASE_URL}/bank-transfer/api/v1/bankTransfer/virtualAccount`,
+      "https://api.paystack.co/transaction/initialize",
       payload,
       {
         headers: {
+          Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
           "Content-Type": "application/json",
-          "Ocp-Apim-Subscription-Key": process.env.PAYMENT_API_KEY,
         },
       }
     );
+console.log(response);
+  
 
-    const data = response.data.data;
 
-    if (!data || !data.transactionId) {
+    const data = response.data;
+
+    if (!data?.data) {
       return res.status(500).json({ error: "Failed to create top-up" });
     }
 
-    // Update payment with provider details
-    payment.transactionId = data.transactionId;
-    payment.virtualAccountNumber = data.virtualBankAccountNumber;
-    payment.virtualBankCode = data.virtualBankCode;
-    payment.virtualBankName = data.virtualBankName || "Wema Bank";
+    const psPayment = data.data;
+
+    // ✅ Update DB with details
+    payment.transactionId = psPayment.reference;
+    payment.txRef = tx_ref;
+    payment.rawResponse = psPayment;
     await payment.save();
 
     res.json({
       success: true,
       payment: {
         _id: payment._id,
-        user: user._id,
+        user: payment.user,
         amount: payment.amount,
         currency: payment.currency,
+        tx_ref,
         transactionId: payment.transactionId,
         status: payment.status,
-        virtualAccountNumber: payment.virtualAccountNumber,
-        virtualBankCode: payment.virtualBankCode,
-        virtualBankName: payment.virtualBankName,
         description: payment.description,
         createdAt: payment.createdAt,
+        checkoutUrl: psPayment.authorization_url, // frontend should redirect user here
       },
     });
   } catch (error) {
     console.error(
-      "Failed to create top-up full error:",
-      error.response?.data || error.message || error
+      "Failed to create top-up error:",
+      error.response?.data || error.message
     );
     res.status(500).json({ error: "Failed to create top-up" });
   }
 };
 
-// Check Payment Status
+/**
+ * Verify Payment
+ */
 export const checkTopupStatus = async (req, res) => {
   try {
     const { transactionId } = req.params;
 
-    // Find payment by transactionId
     const payment = await Payment.findOne({ transactionId }).populate("user");
-    if (!payment) return res.status(404).json({ error: "Payment not found" });
+    if (!payment) {
+      return res.status(404).json({ error: "Payment not found" });
+    }
 
-    // Call provider
+    // Verify with Paystack
     const response = await axios.get(
-      `${process.env.PAYMENT_BASE_URL}/bank-transfer/api/v1/bankTransfer/transactions/${transactionId}`,
+      `https://api.paystack.co/transaction/verify/${transactionId}`,
       {
-        headers: {
-          "Content-Type": "application/json",
-          "Ocp-Apim-Subscription-Key": process.env.PAYMENT_API_KEY,
-        },
+        headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` },
       }
     );
 
     const data = response.data.data;
 
-    // Update payment + user wallet
     if (data.status === "success" && payment.status !== "success") {
-      payment.user.balance += payment.amount;
+      payment.user.balance += payment.amount; // add wallet balance
       await payment.user.save();
 
       payment.status = "success";
+      payment.rawResponse = data;
       await payment.save();
     } else if (data.status === "failed") {
       payment.status = "failed";
@@ -128,7 +130,42 @@ export const checkTopupStatus = async (req, res) => {
       balance: payment.user.balance,
     });
   } catch (error) {
-    console.error("Check top-up status error:", error.response?.data || error.message);
+    console.error(
+      "Check top-up status error:",
+      error.response?.data || error.message
+    );
     res.status(500).json({ error: "Failed to check top-up status" });
+  }
+};
+
+/**
+ * Webhook (automatic confirmation from Paystack)
+ */
+export const paystackWebhook = async (req, res) => {
+  try {
+    const secret = process.env.PAYSTACK_SECRET_KEY;
+    const event = req.body;
+
+    if (event.event === "charge.success") {
+      const data = event.data;
+
+      const payment = await Payment.findOne({
+        transactionId: data.reference,
+      }).populate("user");
+
+      if (payment && data.status === "success" && payment.status !== "success") {
+        payment.user.balance += payment.amount / 100; // convert back from kobo
+        await payment.user.save();
+
+        payment.status = "success";
+        payment.rawResponse = data;
+        await payment.save();
+      }
+    }
+
+    res.sendStatus(200);
+  } catch (error) {
+    console.error("Webhook error:", error.message);
+    res.sendStatus(500);
   }
 };
